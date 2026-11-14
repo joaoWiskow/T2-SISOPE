@@ -1,0 +1,14 @@
+experimento,carga,alocador,bloqueio,operacoes,erros,acessos_total,acessos_por_op,tempo_total_ms,tempo_medio_op_ms,max_tabela_global,max_tabela_processo,max_soma_tabelas_processo,max_contador_aberturas,extras
+X3,compilador,contigua,consultivo,3904,0,5141,1.3169,10917.1100,2.7964,1,1,1,1,blocos_livres=319343;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319343;realocacoes=0;segmentos_livres=1
+X3,banco_dados,contigua,consultivo,6602,0,3607,0.5463,19838.5000,3.0049,2,2,2,1,blocos_livres=303019;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=303019;realocacoes=0;segmentos_livres=1
+X4,profundidade_01,contigua,consultivo,62,0,64,1.0323,98.4700,1.5882,1,1,1,1,blocos_livres=319997;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319997;realocacoes=0;segmentos_livres=1
+X4,profundidade_02,contigua,consultivo,63,0,88,1.3968,111.9400,1.7768,1,1,1,1,blocos_livres=319996;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319996;realocacoes=0;segmentos_livres=1
+X4,profundidade_03,contigua,consultivo,64,0,113,1.7656,125.4500,1.9602,1,1,1,1,blocos_livres=319995;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319995;realocacoes=0;segmentos_livres=1
+X4,profundidade_04,contigua,consultivo,65,0,139,2.1385,139.0000,2.1385,1,1,1,1,blocos_livres=319994;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319994;realocacoes=0;segmentos_livres=1
+X4,profundidade_05,contigua,consultivo,66,0,166,2.5152,152.5900,2.3120,1,1,1,1,blocos_livres=319993;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319993;realocacoes=0;segmentos_livres=1
+X4,profundidade_06,contigua,consultivo,67,0,194,2.8955,166.2200,2.4809,1,1,1,1,blocos_livres=319992;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319992;realocacoes=0;segmentos_livres=1
+X4,profundidade_07,contigua,consultivo,68,0,223,3.2794,179.8900,2.6454,1,1,1,1,blocos_livres=319991;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319991;realocacoes=0;segmentos_livres=1
+X4,profundidade_08,contigua,consultivo,69,0,253,3.6667,193.6000,2.8058,1,1,1,1,blocos_livres=319990;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319990;realocacoes=0;segmentos_livres=1
+X4,profundidade_09,contigua,consultivo,70,0,284,4.0571,207.3500,2.9621,1,1,1,1,blocos_livres=319989;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319989;realocacoes=0;segmentos_livres=1
+X4,profundidade_10,contigua,consultivo,71,0,316,4.4507,221.1400,3.1146,1,1,1,1,blocos_livres=319988;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319988;realocacoes=0;segmentos_livres=1
+X5,servidor_web,contigua,consultivo,6279,0,17811,2.8366,9303.5220,1.4817,12,3,24,6,blocos_livres=319801;descontinuidades_medias=0.0;falhas_alocacao=0;maior_segmento_livre=319801;realocacoes=0;segmentos_livres=1
