@@ -1,5 +1,5 @@
 # Trabalho prático 2026/II — SimES: simulador de E/S e de sistema de arquivos
-
+Guia do Grupo - https://docs.google.com/document/d/1pEubK91UIG3c1qrZKUzUaR0ZSIV2Uj5tuPRKA3NWV1g/edit?usp=sharing
 Sistemas Operacionais · PUCRS · Prof. Filipo Novo Mór · [filipomor.com](https://filipomor.com)
 
 O enunciado completo (escopo, regras, entrega e avaliação) é distribuído pelo professor.
