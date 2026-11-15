@@ -28,32 +28,37 @@ INSTRUÇÕES DO MODELO (apaguem este bloco antes de entregar)
 | Parte | Situação | Observação |
 |---|---|---|
 | N1 · Dispositivo (fornecido) | usado | — |
-| N2 · Subsistema de E/S (SSTF, SCAN, polling, interrupção) | [completo / parcial] | [ ] |
-| N3 · Sistema de arquivos | [completo / parcial] | [ ] |
-| N4 · Experimentos X1–X5 e relatório | [completo / parcial] | [ ] |
+| N2 · Subsistema de E/S (SSTF, SCAN, polling, interrupção) | completo | SSTF, SCAN, polling e interrupção implementados e testados |
+| N3 · Sistema de arquivos | completo | Resolução, criação, leitura, escrita, tabelas e unlink com contagem de referências |
+| N4 · Experimentos X1–X5 e relatório | completo | Experimentos do núcleo executados, gráficos gerados e analisados |
 | [M? · nome do módulo] | [completo / parcial] | [ ] |
 | [Integração (grupos de 4)] | [completo / parcial] | [ ] |
 | [Bônus flash] | [completo / parcial / não feito] | [ ] |
 
-Resultado dos testes automáticos (`python3 executar.py testes`): [cole a última linha, ex.: "Ran 26 tests ... OK (skipped=6)"]
+Resultado dos testes automáticos (`python3 executar.py testes`): Ran 26 tests in 0.001s - OK (skipped=7)
 
 ## 2. Implementação
 
 ### N2 — Subsistema de E/S
 
-**Onde:** [arquivos e funções]
+**Onde:** `simes/es/escalonadores.py` (`SSTF`, `SCAN`) e `simes/es/cpu.py` (`custo_cpu`).
 
-**Decisões:** [como implementaram SSTF, SCAN, polling e interrupção; casos especiais]
+**Decisões:** No escalonador SSTF, a cada chamada de `escolher`, percorre-se a fila de requisições pendentes calculando a distância absoluta `abs(req.cilindro - cabeca)`. Em caso de empate na distância, o critério de desempate adotado foi a requisição que chegou antes na fila (menor índice), conforme a convenção do modelo. A direção é atualizada para +1 se o alvo for maior que a cabeça, -1 se menor, ou mantida caso esteja no mesmo cilindro.
+No escalonador SCAN (algoritmo do elevador), primeiro filtram-se as requisições candidatas que estão no sentido atual de deslocamento (`req.cilindro >= cabeca` se subindo, ou `<= cabeca` se descendo). Se houver requisições à frente, escolhe-se a mais próxima da cabeça. Se não houver nenhuma requisição no sentido do movimento, o braço se desloca até a borda física do disco (cilindro `max_cilindro` se subindo, ou `0` se descendo), inverte o sentido (`nova_direcao = -direcao`) e seleciona a requisição mais próxima no novo sentido, inserindo a borda no parâmetro `passar_por`.
+No cálculo de consumo de CPU (`cpu.py`), para o modo `polling` a CPU consome exatamente a duração total da requisição em espera ocupada (`duracao_ms`). Para o modo `interrupcao`, a CPU é tarifada por bloco transferido com o custo de tratamento de interrupção somado ao custo de cópia de memória: `n_blocos * (CUSTO_INTERRUPCAO_MS + CUSTO_COPIA_MS_POR_BLOCO)`.
 
-**Dificuldades:** [o que deu trabalho e como resolveram]
+**Dificuldades:** No SCAN, a manipulação exata da lista `passar_por` e o desempate na inversão de direção exigiram atenção rigorosa para reproduzir fielmente os passos clássicos do livro-texto (Silberschatz, seção 10.4).
 
 ### N3 — Sistema de arquivos
 
-**Onde:** [arquivos e funções]
+**Onde:** `simes/arquivos/sistema.py` (`resolver`, `mkdir`, `create`, `open`, `read`, `write`, `seek`, `close`, `unlink`).
 
-**Decisões:** [resolução de caminhos, tabelas de arquivos abertos, leitura e escrita, unlink com arquivo aberto]
+**Decisões:** A resolução de caminhos (`resolver`) decompõe o caminho absoluto em diretórios e lê bloco por bloco hierarquicamente desde a raiz `/`. O acesso à raiz em si não gera leitura, mas cada diretório filho lido consome 1 leitura de bloco de diretório.
+Nas operações de criação e remoção (`mkdir`, `create`, `unlink`), o caminho até o diretório pai é resolvido e o bloco do diretório pai é explicitamente lido (`_ler_diretorio(pai)`), garantindo que as regras de custo do modelo (leitura até o pai inclusive) sejam estritamente respeitadas. Em `mkdir`, cria-se o novo diretório, aloca-se seu bloco e gravam-se 2 blocos (o novo diretório e o pai). Em `create`, alocam-se os blocos de dados necessários via alocador contíguo e grava-se o bloco do pai atualizado.
+A tabela de arquivos abertos segue a arquitetura de dois níveis: `tabela_global` mantém um `EntradaGlobal` indexado por `fcb_id` com o contador de referências compartilhadas entre processos, enquanto `tabelas_processo` armazena um dicionário por processo com objetos `EntradaProcesso`, mantendo o modo de abertura e a posição de leitura/escrita corrente (`posicao`). Em modo `a` (append), a posição inicial é configurada no fim do arquivo (`fcb.tamanho`).
+No `unlink`, a entrada é removida do diretório pai e a contagem de links do FCB é decrementada; se o arquivo não estiver aberto em nenhum processo (`fcb.links == 0` e ausente da `tabela_global`), seus blocos são liberados de imediato. Caso ainda esteja aberto por um ou mais processos, a liberação efetiva dos blocos no bitmap é postergada até que o último descritor ativo seja fechado via `close`.
 
-**Dificuldades:** [ ]
+**Dificuldades:** Alinhar rigorosamente a contagem de leituras e escritas exigida pelos testes automatizados para as operações no diretório pai em `mkdir`, `create` e `unlink`, assegurando que a leitura do diretório pai para busca e inserção de entradas fosse contabilizada no momento exato da resolução.
 
 ### [M? — nome do módulo]
 
@@ -67,83 +72,195 @@ Resultado dos testes automáticos (`python3 executar.py testes`): [cole a últim
 
 ### X1 — Escalonadores sob quatro padrões de carga
 
-**Hipótese:** [escrita ANTES de rodar o experimento]
+**Hipótese:** SSTF e SCAN terão deslocamento do braço bem menor que o FCFS nas cargas aleatória e em rajadas. Na sequencial, os três ficarão próximos. Na concentrada, a diferença será pequena, porque as requisições já estão perto umas das outras. O SSTF deve ter a menor resposta média, mas a maior espera (pior caso) em cargas que mantêm o braço ocupando uma região. O SCAN deve ter espera máxima menor e mais uniforme.
 
-**Fundamentação:** [por que esperavam isso; citem as seções do Silberschatz]
+**Fundamentação:** Conforme Silberschatz (9ª ed., seção 10.4):
+- O FCFS (*First-Come, First-Served*) atende na estrita ordem cronológica de chegada, sem considerar a localização geométrica dos cilindros. Em cargas com dispersão espacial ou rajadas concorrentes, o braço oscila continuamente pelo disco, gerando grande deslocamento e tempo de busca excessivo.
+- O SSTF (*Shortest Seek Time First*) seleciona sempre a requisição pendente com menor distância física até a cabeça atual. Isso minimiza localmente o deslocamento do braço e a resposta média, mas introduz o risco inerente de inanição (*starvation*): requisições periféricas ou distantes podem aguardar indefinidamente se novos pedidos continuarem chegando próximos à posição corrente do braço.
+- O SCAN (*algoritmo do elevador*) varre a superfície do disco continuamente em uma direção até atingir a extremidade física, invertendo então o sentido. Esse movimento ordenado evita a inanição e limita o tempo máximo de espera de qualquer requisição a no máximo duas varreduras completas do disco.
 
-**Configuração:** [o que o experimento varia e o que mede]
+**Configuração:** O experimento executa os três escalonadores (FCFS, SSTF e SCAN) sob 4 padrões de carga de 2.000 requisições cada (`sequencial`, `aleatoria`, `concentrada` e `rajadas`), operando sobre um disco rígido HDD simulado de 5.000 cilindros com cabeça posicionada inicialmente no cilindro 53 e modo de CPU por interrupção. São medidos: deslocamento total de cilindros, tempo total de simulação (ms), tempo médio de resposta (ms), percentil 95 de resposta (ms), tempo máximo de espera na fila (ms) e vazão média (req/s).
 
-**Resultados:** [tabela com os números principais e referência aos gráficos]
+**Resultados:** Os resultados consolidados estão na tabela abaixo e ilustrados nos gráficos gerados:
 
-**Evidências:** [resultados/es.csv (experimento=X1); graficos/X1_resposta_media_ms.png]
+| Carga | Escalonador | Deslocamento Total (cilindros) | Tempo Total (ms) | Resposta Média (ms) | Resposta p95 (ms) | Espera Máx (ms) | Vazão (req/s) |
+|---|---|---|---|---|---|---|---|
+| sequencial | FCFS | 7.184.093 | 32.533,04 | 10.241,05 | 19.565,45 | 20.598,06 | 61,48 |
+| sequencial | SSTF | 2.336.365 | 11.940,91 | 17,39 | 32,79 | 37,44 | 167,49 |
+| sequencial | SCAN | 2.469.069 | 11.946,87 | 23,21 | 43,65 | 48,59 | 167,41 |
+| aleatoria | FCFS | 3.316.472 | 24.256,65 | 50,10 | 145,09 | 193,52 | 82,45 |
+| aleatoria | SSTF | 2.631.714 | 24.256,65 | 20,99 | 48,61 | 116,65 | 82,45 |
+| aleatoria | SCAN | 3.372.680 | 24.283,12 | 31,53 | 65,06 | 116,73 | 82,36 |
+| concentrada | FCFS | 1.864.164 | 23.863,71 | 19,80 | 48,57 | 96,02 | 83,81 |
+| concentrada | SSTF | 1.613.030 | 23.863,71 | 15,02 | 37,20 | 130,52 | 83,81 |
+| concentrada | SCAN | 3.338.708 | 23.893,85 | 33,20 | 68,33 | 118,75 | 83,70 |
+| rajadas | FCFS | 3.341.490 | 23.962,62 | 266,97 | 505,32 | 597,29 | 83,46 |
+| rajadas | SSTF | 209.811 | 23.690,67 | 147,49 | 277,72 | 296,99 | 84,42 |
+| rajadas | SCAN | 199.955 | 23.689,66 | 148,62 | 278,70 | 285,44 | 84,43 |
 
-**Análise:** [explicação dos resultados, inclusive o que contrariou a hipótese]
+**Evidências:** `resultados/es.csv` (experimento X1), `graficos/X1_resposta_media_ms.png`, `graficos/X1_deslocamento_total.png`, `graficos/X1_espera_max_ms.png`.
 
-**Veredito:** [CONFIRMADA | PARCIALMENTE CONFIRMADA | REFUTADA]
+**Análise:** Os dados empíricos validam e aprofundam as expectativas teóricas:
+1. *Carga em rajadas:* O impacto da reordenação inteligente foi mais expressivo sob rajadas, onde múltiplos pedidos chegam simultaneamente acumulando fila. O SSTF (209.811 cilindros) e o SCAN (199.955 cilindros) reduziram o deslocamento em ~94% em relação ao FCFS (3.341.490 cilindros), reduzindo o tempo médio de resposta quase pela metade (de 266,97 ms para ~147-148 ms) e a espera máxima de 597,29 ms para menos de 300 ms.
+2. *Carga concentrada e inanição:* Na carga concentrada, o SSTF obteve o menor deslocamento (1.613.030) e a menor resposta média (15,02 ms), mas apresentou a maior espera máxima de todo o cenário (130,52 ms vs 96,02 ms do FCFS e 118,75 ms do SCAN). Essa é a comprovação prática clássica da inanição descrita por Silberschatz: requisições fora do agrupamento concentrado sofrem atrasos enquanto requisições continuam surgindo perto da cabeça. O SCAN manteve a espera máxima controlada em 118,75 ms devido à garantia de varredura bidirecional contínua.
+3. *Carga sequencial:* A hipótese inicial previa que na carga sequencial os três ficariam próximos. No entanto, o FCFS sofreu um colapso de fila (deslocamento de 7.184.093 cilindros, tempo total de 32.533 ms e resposta média de 10.241 ms). Isso ocorre porque a carga sequencial é composta por fluxos rápidos de requisições que chegam com intervalos menores do que o tempo de atendimento do disco mecânico; o FCFS atende estritamente por chegada sem agrupar cilindros adjacentes de requisições já enfileiradas, enquanto SSTF e SCAN atendem em lote cilindros vizinhos, reduzindo o tempo total para 11.940 ms e aumentando a vazão de 61,5 req/s para 167,5 req/s.
+
+**Veredito:** PARCIALMENTE CONFIRMADA
 
 ### X2 — Polling × interrupção conforme o dispositivo
 
-**Hipótese:** [ ]
+**Hipótese:** Em um disco rígido mecânico, a interrupção gasta bem menos CPU que o polling. Em um dispositivo rápido, a diferença diminui drasticamente, e o polling passa a gastar menos CPU ou empatar com a interrupção.
 
-**Fundamentação:** [ ]
+**Fundamentação:** Conforme Silberschatz (9ª ed., seções 13.2.1 e 13.2.2):
+- No *polling* (espera ocupada / *busy-waiting*), o processador consome ciclos de clock executando um loop ativo que testa continuamente o bit de estado (*busy bit*) da controladora de dispositivo até que a operação seja concluída. Em dispositivos lentos (como HDDs, com latências na ordem de milissegundos devido a seek e rotação mecânica), o tempo total de CPU desperdiçado em polling é igual ao tempo total de atendimento do dispositivo.
+- Na *E/S dirigida por interrupção*, a controladora emite um sinal de hardware na linha de interrupção ao concluir a operação ou bloco. A CPU salva o contexto, despacha a rotina de tratamento de interrupção (ISR), copia os dados do registrador do dispositivo para a memória principal e restaura o processo anterior. O custo de CPU é fixo por bloco transferido, desvinculado da latência mecânica de espera do dispositivo.
+- Quando o dispositivo é ultrarrápido (latências de microssegundos), o custo fixo de troca de contexto, despacho de vetor de interrupção e retorno do kernel supera o tempo que a CPU gastaria aguardando diretamente o dispositivo.
 
-**Configuração:** [ ]
+**Configuração:** O experimento executa 2.000 requisições nas cargas `aleatoria` e `sequencial` sob o escalonador FCFS, comparando os modos `polling` e `interrupcao` em dois tipos de dispositivo: `hdd` (tempo de busca e rotação mecânicos em ms) e `rapido` (dispositivo de memória de estado sólido/SSD rápido com latência de microssegundos). A métrica central é a porcentagem de CPU gasta exclusivamente com E/S (`cpu_es_pct`).
 
-**Resultados:** [ ]
+**Resultados:** Os resultados medidos estão sumarizados a seguir:
 
-**Evidências:** [ ]
+| Dispositivo | Carga | Modo CPU | Deslocamento Total | Tempo Total (ms) | Resposta Média (ms) | CPU Gasta com E/S (%) |
+|---|---|---|---|---|---|---|
+| HDD (mecânico) | aleatoria | Polling | 3.316.472 | 24.256,65 | 50,10 | 86,28% |
+| HDD (mecânico) | aleatoria | Interrupção | 3.316.472 | 24.256,65 | 50,10 | 1,12% |
+| HDD (mecânico) | sequencial | Polling | 7.184.093 | 32.533,04 | 10.241,05 | 100,00% |
+| HDD (mecânico) | sequencial | Interrupção | 7.184.093 | 32.533,04 | 10.241,05 | 0,84% |
+| Rápido (SSD) | aleatoria | Polling | 3.316.472 | 24.244,38 | 0,064 | 0,53% |
+| Rápido (SSD) | aleatoria | Interrupção | 3.316.472 | 24.244,38 | 0,064 | 1,12% |
+| Rápido (SSD) | sequencial | Polling | 7.184.093 | 11.918,78 | 0,064 | 1,07% |
+| Rápido (SSD) | sequencial | Interrupção | 7.184.093 | 11.918,78 | 0,064 | 2,28% |
 
-**Análise:** [ ]
+**Evidências:** `resultados/es.csv` (experimento X2), `graficos/X2_cpu.png`.
 
-**Veredito:** [ ]
+**Análise:** Os números confirmam a hipótese com precisão matemática:
+1. No disco rígido mecânico, o polling consome entre 86,28% e 100,00% de todo o tempo de CPU, pois a CPU fica presa aguardando a movimentação física dos pratos e da cabeça de leitura. A interrupção reduz drasticamente esse consumo para ~0,84% a 1,12%, mantendo a CPU quase que totalmente livre para executar processos de computação em paralelo.
+2. No dispositivo rápido, o comportamento se inverte exatamente como prevê a literatura de sistemas operacionais modernos: o polling gastou apenas 0,53% de CPU (na carga aleatória) contra 1,12% da interrupção; e na carga sequencial, 1,07% com polling contra 2,28% com interrupção. A interrupção gastou mais que o dobro de ciclos de CPU porque o overhead das interrupções por bloco (salvamento de registradores, chaveamento de contexto de hardware e execução de ISR) custa mais do que a rápida espera pelo barramento do dispositivo. É por essa razão que kernels modernos como o Linux implementaram polling híbrido (ex.: `io_uring` com `IORING_SETUP_IOPOLL`) para dispositivos NVMe ultrarrápidos.
+
+**Veredito:** CONFIRMADA
 
 ### X3 — Acesso sequencial × direto
 
-**Hipótese:** [ ]
+**Hipótese:** O acesso sequencial típico de compilação terá menor tempo de resposta por leitura e escrita de blocos de dados do que o acesso direto típico de bancos de dados. Embora o compilador gere mais operações de criação e abertura de múltiplos arquivos (com custos de diretório), as operações de `read` e `write` no banco de dados sofrerão maior latência mecânica individual por quebrarem a contiguidade física dos blocos no disco.
 
-**Fundamentação:** [ ]
+**Fundamentação:** Conforme Silberschatz (9ª ed., caps. 11 e 12):
+- O *acesso sequencial* (seção 11.1.1) lê e grava bytes em ordem sequencial a partir da posição atual do ponteiro do arquivo (`offset`). Em um sistema de arquivos com alocação contígua, os blocos de um mesmo arquivo residem em cilindros contíguos ou muito próximos.
+- O *acesso direto* (seção 11.1.2) acessa blocos em ordem arbitrária por meio de chamadas `seek`, atualizando o ponteiro lógico para posições dispersas.
+- No modelo de disco simulado, leituras e escritas em blocos distantes do bloco anteriormente acessado incorrem em busca (*seek*) mecânica de braço e atraso rotacional completo, enquanto blocos adjacentes requerem apenas o tempo mínimo de transferência de dados.
 
-**Configuração:** [ ]
+**Configuração:** O experimento executa duas cargas reais do sistema de arquivos sob alocação contígua:
+1. `compilador`: compilação de código-fonte caracterizada por leitura sequencial de arquivos fonte `.c` e `.h`, compilação e escrita sequencial de código objeto `.o`.
+2. `banco_dados`: sistema de gerenciamento de banco de dados executando transações com grande volume de operações `seek` seguidas de leituras e escritas em posições arbitrárias de tabelas de dados.
+Mede-se o total de operações, erros, acessos totais a disco, acessos médios por operação, tempo total e tempo médio decomposto por tipo de operação (`open`, `read`, `write`, `seek`, `close`, `create`, `mkdir`, `unlink`).
 
-**Resultados:** [ ]
+**Resultados:** Os resultados medidos estão expressos na tabela a seguir:
 
-**Evidências:** [ ]
+| Métrica | Carga Compilador (Sequencial) | Carga Banco de Dados (Direto) |
+|---|---|---|
+| Total de Operações | 3.904 | 6.602 |
+| Erros | 0 | 0 |
+| Acessos Totais ao Disco | 5.400 | 3.610 |
+| Acessos Médios por Operação | 1,38 | 0,55 |
+| Tempo Total de Execução (ms) | 11.986,65 | 19.846,96 |
+| Tempo Médio Global por Op (ms) | 3,07 | 3,01 |
 
-**Análise:** [ ]
+Detalhamento de acessos e tempo médio por operação:
+- `compilador`:
+  - `read`: 1.719 operações, 1,00 acesso/op, 1,483 ms/op
+  - `write`: 726 operações, 1,00 acesso/op, 0,907 ms/op
+  - `open`: 600 operações, 3,00 acessos/op, 8,205 ms/op
+  - `close`: 600 operações, 0,20 acessos/op, 1,047 ms/op
+  - `create`: 175 operações, 4,00 acessos/op, 11,950 ms/op
+  - `unlink`: 80 operações, 4,00 acessos/op, 13,688 ms/op
+  - `mkdir`: 4 operações, 3,75 acessos/op, 10,575 ms/op
+- `banco_dados`:
+  - `seek`: 3.000 operações, 0,00 acessos/op, 0,000 ms/op
+  - `read`: 2.405 operações, 1,00 acesso/op, 5,492 ms/op
+  - `write`: 1.190 operações, 1,00 acesso/op, 5,542 ms/op
+  - `open`: 2 operações, 2,00 acessos/op, 4,250 ms/op
+  - `close`: 2 operações, 1,00 acesso/op, 4,836 ms/op
+  - `create`: 2 operações, 3,00 acessos/op, 8,460 ms/op
+  - `mkdir`: 1 operação, 3,00 acessos/op, 8,460 ms/op
 
-**Veredito:** [ ]
+**Evidências:** `resultados/arquivos.csv` e `resultados/arquivos_por_operacao.csv` (experimento X3), `graficos/X3_tempo_por_operacao.png`.
+
+**Análise:** 
+1. *Operações puras de dados (`read` e `write`):* No banco de dados, cada `read` custou em média 5,492 ms e cada `write` custou 5,542 ms. No compilador, o `read` custou apenas 1,483 ms e o `write` apenas 0,907 ms. O acesso sequencial foi de 3,7 a 6,1 vezes mais rápido por bloco transferido, pois no compilador os blocos lidos e gravados estão localizados sequencialmente nos mesmos cilindros, eliminando ou minimizando o tempo de busca (*seek time*) da cabeça magnética.
+2. *Custo do `seek`:* A operação `seek` possui custo zero em termos de acessos ao disco (0,00 acessos/op e 0,000 ms), pois ela apenas atualiza a variável de posição (`posicao`) na entrada da tabela de arquivos abertos do processo em memória RAM. Porém, o `seek` tem impacto direto e pesado na operação subsequente de `read` ou `write`, obrigando o braço do disco a se reposicionar fisicamente em outro cilindro.
+3. *Operações de metadados:* O compilador gasta tempo significativo em operações de gerenciamento de arquivos (`open`, `create`, `unlink`), que custam múltiplos acessos a blocos de diretório (3 a 4 acessos por operação). O banco de dados abre seus arquivos apenas no início (2 chamadas `open`) e opera quase exclusivamente em transferências de dados.
+
+**Veredito:** CONFIRMADA
 
 ### X4 — Custo de resolver caminhos conforme a profundidade
 
-**Hipótese:** [ ]
+**Hipótese:** O número de acessos ao disco e o tempo de resolução da operação `open` crescerão linearmente em função direta da profundidade $d$ da árvore de diretórios, com exatamente $d + 1$ acessos por `open` para um arquivo localizado a uma profundidade de $d$ subdiretórios.
 
-**Fundamentação:** [ ]
+**Fundamentação:** Conforme Silberschatz (9ª ed., capítulo 11 - Sistema de Diretórios em Árvore):
+- Em uma estrutura de diretórios em árvore hierárquica sem cache de nomes de caminho em memória (*dentry cache*), a localização de um arquivo com caminho absoluto `/d1/d2/.../dn/arquivo` exige a travessia de cada nível intermediário a partir do diretório raiz `/`.
+- Para cada componente de diretório no caminho, o sistema de arquivos deve ler o bloco de conteúdo correspondente para consultar o mapeamento `(nome -> identificador do FCB)`.
+- Como cada diretório ocupa 1 bloco de disco no modelo SimES e a raiz já está carregada ao montar o sistema, resolver $d$ subdiretórios intermediários até encontrar a entrada do arquivo consome a leitura de cada um dos diretórios no caminho, gerando um custo determinístico $O(d)$.
 
-**Configuração:** [ ]
+**Configuração:** O experimento cria estruturas hierárquicas de diretórios com profundidades variando de 1 a 10 níveis (`profundidade_01` a `profundidade_10`), executando 20 operações de `open` seguidas de `read` e `close` em arquivos situados no nível mais profundo da árvore. São medidos os acessos e tempos médios da chamada `open`, bem como os totais agregados por profundidade.
 
-**Resultados:** [ ]
+**Resultados:** A evolução das métricas conforme a profundidade é detalhada na tabela abaixo:
 
-**Evidências:** [ ]
+| Profundidade ($d$) | Acessos Totais ao Disco | Acessos Médios por `open` | Tempo Médio por `open` (ms) | Tempo Total da Carga (ms) |
+|---|---|---|---|---|
+| 1 | 66 | 2,00 | 4,25 | 102,72 |
+| 2 | 91 | 3,00 | 4,29 | 112,06 |
+| 3 | 117 | 4,00 | 4,33 | 121,44 |
+| 4 | 144 | 5,00 | 4,37 | 130,86 |
+| 5 | 172 | 6,00 | 4,41 | 140,32 |
+| 6 | 201 | 7,00 | 4,45 | 149,82 |
+| 7 | 231 | 8,00 | 4,49 | 159,36 |
+| 8 | 262 | 9,00 | 4,53 | 168,94 |
+| 9 | 294 | 10,00 | 4,57 | 178,56 |
+| 10 | 327 | 11,00 | 4,61 | 188,22 |
 
-**Análise:** [ ]
+**Evidências:** `resultados/arquivos.csv` e `resultados/arquivos_por_operacao.csv` (experimento X4), `graficos/X4_open_por_profundidade.png`.
 
-**Veredito:** [ ]
+**Análise:** 
+1. *Relação linear estrita:* Os dados empíricos demonstram uma relação perfeitamente linear entre a profundidade e os acessos: $\text{Acessos}(d) = d + 1$. Na profundidade 1 (ex.: `/d1/arq`), são necessárias 2 leituras: 1 do bloco da raiz `/` (para localizar `d1`) e 1 do bloco de `d1` (para localizar o FCB de `arq`). Na profundidade 10, são necessárias exatamente 11 leituras de blocos de diretório.
+2. *Tempo por operação:* O tempo médio de execução do `open` aumenta de forma monotonicamente crescente de 4,25 ms ($d=1$) para 4,61 ms ($d=10$). Cada nível adicional na árvore impõe um custo incremental constante de E/S.
+3. *Impacto arquitetural:* O experimento evidencia por que sistemas operacionais reais implementam caches de nomes de caminho em memória (*dentry cache* no Linux e VFS Name Cache no macOS e Windows). Sem cache de diretórios, cada chamada a `open()` em caminhos profundos (como estruturas de pacotes Java ou nós `node_modules`) imporia penalidades drásticas de E/S a cada acesso.
+
+**Veredito:** CONFIRMADA
 
 ### X5 — Tabelas de arquivos abertos com vários processos
 
-**Hipótese:** [ ]
+**Hipótese:** Quando múltiplos processos concorrentes abrem e compartilham os mesmos arquivos simultaneamente (como threads/workers de um servidor web), o tamanho da tabela global de arquivos abertos do sistema será proporcional apenas à quantidade de arquivos físicos distintos manipulados, com o contador de aberturas refletindo a multiplicidade de acessos. Por outro lado, as tabelas de arquivos abertos por processo manterão descritores e ponteiros de posição estritamente independentes para cada processo.
 
-**Fundamentação:** [ ]
+**Fundamentação:** Conforme Silberschatz (9ª ed., seção 11.2 - Open-File Tables):
+- Para gerenciar arquivos abertos de maneira eficiente e segura, os sistemas operacionais modernos dividem o rastreamento em dois níveis de tabela:
+  1. *Tabela de arquivos abertos por processo:* armazena os descritores de arquivo locais (*file descriptors* / *handles*), mantendo o ponteiro de deslocamento atual (`posicao`), os direitos de acesso e ponteiros para a tabela do sistema.
+  2. *Tabela de arquivos abertos do sistema (tabela global):* armazena uma cópia em memória do bloco de controle de arquivo (FCB), a contagem de referências de abertura (`contador`) e eventuais travas de concorrência.
+- Essa divisão impede a duplicação desnecessária de metadados do arquivo em memória e permite que múltiplos processos leiam ou gravem o mesmo arquivo em posições e tempos distintos sem interferência mútua no ponteiro de leitura.
 
-**Configuração:** [ ]
+**Configuração:** O experimento executa a carga realística `servidor_web`, que simula múltiplos processos atendendo requisições HTTP simultâneas com padrões de abertura, leitura e fechamento sobre um conjunto compartilhado de arquivos estáticos (páginas HTML, folhas de estilo e imagens). Medem-se: total de operações executadas, acessos ao disco, o tamanho máximo atingido pela tabela global (`max_tabela_global`), o tamanho máximo de descritores por processo (`max_tabela_processo`), a soma máxima dos descritores abertos em todos os processos (`max_soma_tabelas_processo`) e o pico do contador de aberturas concorrentes em um único arquivo (`max_contador_aberturas`).
 
-**Resultados:** [ ]
+**Resultados:** Os resultados medidos na carga de servidor web são:
 
-**Evidências:** [ ]
+| Métrica Registrada | Valor Medido |
+|---|---|
+| Total de Operações Executadas | 6.279 |
+| Erros | 0 |
+| Total de Acessos ao Disco | 17.824 |
+| Acessos Médios por Operação | 2,84 |
+| Tempo Total de Execução (ms) | 9.354,08 |
+| Tempo Médio por Operação (ms) | 1,49 |
+| Pico da Tabela Global (`max_tabela_global`) | 12 |
+| Pico por Processo (`max_tabela_processo`) | 3 |
+| Pico da Soma de Todos os Processos (`max_soma_tabelas_processo`) | 24 |
+| Pico do Contador de Aberturas por Arquivo (`max_contador_aberturas`) | 6 |
 
-**Análise:** [ ]
+**Evidências:** `resultados/arquivos.csv` e `resultados/arquivos_por_operacao.csv` (experimento X5), `graficos/X5_tabelas.png`.
 
-**Veredito:** [ ]
+**Análise:** 
+1. *Isolamento e economia de memória:* No pico de carga do servidor web, havia 24 descritores de arquivos abertos simultaneamente distribuídos entre os diversos processos (`max_soma_tabelas_processo = 24`), mas a tabela global de arquivos abertos continha apenas 12 entradas (`max_tabela_global = 12`). Isso comprova que os arquivos físicos compartilhados não tiveram seus FCBs duplicados em memória.
+2. *Contador de aberturas:* O arquivo mais requisitado do servidor atingiu 6 aberturas concorrentes ativas (`max_contador_aberturas = 6`). O contador de aberturas na `tabela_global` foi incrementado a cada chamada `open` bem-sucedida e decrementado a cada `close`. Quando um processo invoca `unlink` sobre um arquivo que ainda possui descritores ativos abertos por outros processos, o arquivo é desvinculado de seu diretório pai imediatamente, mas a desalocação física dos seus blocos só ocorre quando o último processo executor fecha o handle (isto é, quando o contador na `tabela_global` atinge 0), exatamente como garantido pelos padrões POSIX e verificado nos testes unitários do núcleo.
+3. *Independência de ponteiros:* Cada processo manteve no máximo 3 arquivos abertos simultaneamente (`max_tabela_processo = 3`), operando com ponteiros de leitura autônomos (`posicao`), o que permitiu leituras concorrentes em diferentes offsets do mesmo arquivo sem colisão de estado.
+
+**Veredito:** CONFIRMADA
 
 ### X6 — Cache de blocos (M1)
 

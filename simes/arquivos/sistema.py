@@ -217,6 +217,7 @@ class SistemaArquivos:
         pai = self.resolver(pai_caminho)
         if pai.tipo != "diretorio":
             raise ErroSA("ENOTDIR", "%s não é diretório" % pai_caminho)
+        self._ler_diretorio(pai)
         if nome in pai.entradas:
             raise ErroSA("EEXIST", "%s já existe" % caminho)
 
@@ -241,6 +242,7 @@ class SistemaArquivos:
         pai = self.resolver(pai_caminho)
         if pai.tipo != "diretorio":
             raise ErroSA("ENOTDIR", "%s não é diretório" % pai_caminho)
+        self._ler_diretorio(pai)
         if nome in pai.entradas:
             raise ErroSA("EEXIST", "%s já existe" % caminho)
 
@@ -370,6 +372,7 @@ class SistemaArquivos:
         pai = self.resolver(pai_caminho)
         if pai.tipo != "diretorio":
             raise ErroSA("ENOTDIR", "%s não é diretório" % pai_caminho)
+        self._ler_diretorio(pai)
         if nome not in pai.entradas:
             raise ErroSA("ENOENT", "%s não existe" % caminho)
 
