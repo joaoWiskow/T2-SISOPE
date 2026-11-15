@@ -4,3 +4,11 @@ X2,ok,8,
 X3,ok,2,
 X4,ok,10,
 X5,ok,1,
+X6,ok,25,
+X7,ok,28,
+X8,nao_implementado,0,TODO (M3): simular o buffering
+X9,nao_implementado,0,TODO (M4): link
+X10,nao_implementado,0,TODO (M5): usuario
+X11,nao_implementado,0,TODO (M6): alocação encadeada
+X12,nao_implementado,0,TODO (integração): converter o histórico em requisições
+X13,nao_implementado,0,BÔNUS: implementem o DiscoFlash

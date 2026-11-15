@@ -29,6 +29,9 @@ Política de escrita: 'write-through' ou 'write-back'.
 """
 
 
+from collections import OrderedDict
+
+
 class Cache:
     nome = "?"
 
@@ -37,6 +40,7 @@ class Cache:
             raise ValueError("escrita deve ser 'write-through' ou 'write-back'")
         self.capacidade = capacidade
         self.escrita = escrita
+        self.blocos = OrderedDict()  # bloco -> bool (True se sujo)
 
     def ler(self, bloco):
         raise NotImplementedError
@@ -48,26 +52,82 @@ class Cache:
         raise NotImplementedError
 
     def sincronizar(self):
-        raise NotImplementedError
+        sujos = [b for b, s in self.blocos.items() if s]
+        for b in sujos:
+            self.blocos[b] = False
+        return sujos
 
     def sujos(self):
-        raise NotImplementedError
+        return sum(1 for s in self.blocos.values() if s)
 
 
 class CacheLRU(Cache):
     nome = "LRU"
 
-    def __init__(self, capacidade, escrita="write-back"):
-        super().__init__(capacidade, escrita)
-        raise NotImplementedError("TODO (M1): implementar a cache LRU")
+    def ler(self, bloco):
+        if bloco in self.blocos:
+            self.blocos.move_to_end(bloco)
+            return True
+        return False
+
+    def inserir(self, bloco):
+        if bloco in self.blocos:
+            self.blocos.move_to_end(bloco)
+            return []
+        expulsos = []
+        if len(self.blocos) >= self.capacidade:
+            vitima, sujo = self.blocos.popitem(last=False)
+            if sujo:
+                expulsos.append(vitima)
+        self.blocos[bloco] = False
+        return expulsos
+
+    def escrever(self, bloco):
+        expulsos = []
+        if bloco in self.blocos:
+            self.blocos.move_to_end(bloco)
+        else:
+            if len(self.blocos) >= self.capacidade:
+                vitima, sujo = self.blocos.popitem(last=False)
+                if sujo:
+                    expulsos.append(vitima)
+        if self.escrita == "write-through":
+            self.blocos[bloco] = False
+            return [bloco] + expulsos
+        else:
+            self.blocos[bloco] = True
+            return expulsos
 
 
 class CacheFIFO(Cache):
     nome = "FIFO"
 
-    def __init__(self, capacidade, escrita="write-back"):
-        super().__init__(capacidade, escrita)
-        raise NotImplementedError("TODO (M1): implementar a cache FIFO")
+    def ler(self, bloco):
+        return bloco in self.blocos
+
+    def inserir(self, bloco):
+        if bloco in self.blocos:
+            return []
+        expulsos = []
+        if len(self.blocos) >= self.capacidade:
+            vitima, sujo = self.blocos.popitem(last=False)
+            if sujo:
+                expulsos.append(vitima)
+        self.blocos[bloco] = False
+        return expulsos
+
+    def escrever(self, bloco):
+        expulsos = []
+        if bloco not in self.blocos and len(self.blocos) >= self.capacidade:
+            vitima, sujo = self.blocos.popitem(last=False)
+            if sujo:
+                expulsos.append(vitima)
+        if self.escrita == "write-through":
+            self.blocos[bloco] = False
+            return [bloco] + expulsos
+        else:
+            self.blocos[bloco] = True
+            return expulsos
 
 
 CACHES = {"LRU": CacheLRU, "FIFO": CacheFIFO}

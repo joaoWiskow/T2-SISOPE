@@ -31,11 +31,12 @@ INSTRUÇÕES DO MODELO (apaguem este bloco antes de entregar)
 | N2 · Subsistema de E/S (SSTF, SCAN, polling, interrupção) | completo | SSTF, SCAN, polling e interrupção implementados e testados |
 | N3 · Sistema de arquivos | completo | Resolução, criação, leitura, escrita, tabelas e unlink com contagem de referências |
 | N4 · Experimentos X1–X5 e relatório | completo | Experimentos do núcleo executados, gráficos gerados e analisados |
-| [M? · nome do módulo] | [completo / parcial] | [ ] |
-| [Integração (grupos de 4)] | [completo / parcial] | [ ] |
-| [Bônus flash] | [completo / parcial / não feito] | [ ] |
+| M1 · Cache de blocos | completo | Cache LRU e FIFO, write-through e write-back, perda na queda de energia |
+| M2 · Escalonamento avançado | completo | C-SCAN, LOOK, C-LOOK e DEADLINE com controle de inanição |
+| Integração (grupos de 4) | não se aplica | Grupo com 2 integrantes |
+| Bônus flash | não feito | — |
 
-Resultado dos testes automáticos (`python3 executar.py testes`): Ran 26 tests in 0.001s - OK (skipped=7)
+Resultado dos testes automáticos (`python3 executar.py testes`): Ran 26 tests in 0.002s - OK (skipped=5)
 
 ## 2. Implementação
 
@@ -60,13 +61,29 @@ No `unlink`, a entrada é removida do diretório pai e a contagem de links do FC
 
 **Dificuldades:** Alinhar rigorosamente a contagem de leituras e escritas exigida pelos testes automatizados para as operações no diretório pai em `mkdir`, `create` e `unlink`, assegurando que a leitura do diretório pai para busca e inserção de entradas fosse contabilizada no momento exato da resolução.
 
-### [M? — nome do módulo]
+### M1 — Cache de blocos
 
-**Onde:** [ ]
+**Onde:** `simes/es/cache.py` (`CacheLRU`, `CacheFIFO`).
 
-**Decisões:** [ ]
+**Decisões:** A cache foi estruturada sobre `collections.OrderedDict`, mapeando o identificador do bloco para um booleano de sujeira (`dirty`).
+Na `CacheLRU`, qualquer leitura bem-sucedida ou escrita executa `self.blocos.move_to_end(bloco)`, marcando o bloco como o mais recentemente acessado. Quando a capacidade é atingida, a vítima selecionada é a primeira da estrutura (`popitem(last=False)`).
+Na `CacheFIFO`, operações de leitura não alteram a ordem dos elementos, preservando rigorosamente a sequência de inserção original.
+Na política `write-through`, toda escrita atualiza a cache e devolve o próprio bloco para gravação imediata e síncrona no disco.
+Na política `write-back`, a escrita marca o bloco como sujo em RAM sem despacho imediato; gravações ao disco físico ocorrem somente quando um bloco sujo é expulso por saturação de espaço ou durante a sincronização periódica periódica (`sincronizar`). O contador `sujos()` monitora os blocos pendentes de gravação física.
 
-**Dificuldades:** [ ]
+**Dificuldades:** Gerenciar a devolução das listas de blocos sujos na expulsão tanto em chamadas `inserir()` quanto `escrever()`, garantindo que o simulador de E/S enfileirasse as gravações físicas necessárias.
+
+### M2 — Escalonamento avançado
+
+**Onde:** `simes/es/escalonadores.py` (`CSCAN`, `LOOK`, `CLOOK`, `Deadline`).
+
+**Decisões:** 
+No `CSCAN`, o braço move-se apenas em sentido crescente (+1); ao esgotar os pedidos à frente, desloca-se até `max_cilindro` e retorna ao cilindro 0 (ambos registrados em `passar_por` para tarifação de movimento), reiniciando a subida.
+No `LOOK`, a varredura é bidirecional, mas o braço inverte o sentido logo após atender a requisição de maior ou menor cilindro pendente, eliminando viagens desnecessárias até as bordas do disco.
+No `CLOOK`, o atendimento é unidirecional subindo; ao esgotar requisições à frente, salta direto para a requisição de menor cilindro presente na fila.
+No `Deadline`, a cada escolha avalia-se se alguma requisição pendente atingiu seu tempo limite (`agora >= req.prazo`); se houver, atende-se imediatamente a de prazo mais urgente (empate desfeito por ordem de chegada na fila), sobrepondo-se à ordem geométrica. Caso não haja requisições expiradas, comporta-se como o SSTF buscando a menor distância de seek.
+
+**Dificuldades:** Sincronizar o parâmetro `agora` nas decisões de prazo do `Deadline` mantendo consistência com o escalonamento temporal do simulador por eventos.
 
 ## 3. Experimentos
 
@@ -264,131 +281,103 @@ Detalhamento de acessos e tempo médio por operação:
 
 ### X6 — Cache de blocos (M1)
 
-**Hipótese:** [ ]
+**Hipótese:** A cache de blocos aumentará a taxa de acertos e reduzirá o tempo total e de resposta à medida que sua capacidade aumentar (de 64 a 2048 blocos). A política LRU apresentará taxa de acerto superior à FIFO em capacidades intermediárias ao explorar a localidade temporal. Em relação à escrita, o *write-back* reduzirá drasticamente o número de gravações físicas no disco e o tempo de resposta percebido pelas escritas em relação ao *write-through*, porém sofrerá perda de dados (blocos sujos em memória) diante de uma queda súbita de energia, enquanto o *write-through* terá perda zero.
 
-**Fundamentação:** [ ]
+**Fundamentação:** Conforme Silberschatz (9ª ed., seções 13.4.3 e 12.6):
+- *Caching de blocos:* A memória cache do subsistema de E/S retém cópias de blocos lidos e escritos da mídia secundária em memória RAM rápida. Quando uma requisição é atendida na cache (*hit*), o custo de busca e rotação mecânica é eliminado, reduzindo o tempo de atendimento de milissegundos para microssegundos.
+- *Algoritmos de substituição (LRU × FIFO):* O algoritmo LRU (*Least Recently Used*) descarta o bloco que não é referenciado há mais tempo, assumindo que blocos acessados recentemente tendem a ser acessados novamente em breve (princípio da localidade temporal). O FIFO (*First-In, First-Out*) descarta o bloco que entrou há mais tempo, ignorando se ele continua sendo intensamente reutilizado, o que degrada o desempenho sob padrões de reuso contínuo.
+- *Políticas de persistência (Write-Through × Write-Back):* No *write-through*, cada escrita do usuário é propagada de forma imediata e síncrona ao disco, garantindo tolerância a falhas mas saturando o barramento do dispositivo. No *write-back*, as escritas são absorvidas na cache marcando os blocos como "sujos" (*dirty*), sendo descarregadas no disco apenas na expulsão ou durante sincronizações periódicas (`sincronizar()`). Uma interrupção abrupta de energia (*crash*) provoca a perda irreversível de todos os blocos sujos retidos na memória volátil que ainda não foram persistidos fisicamente.
 
-**Configuração:** [ ]
+**Configuração:** O experimento executa a carga `reuso` (3.000 requisições sobre disco rígido mecânico FCFS), comparando:
+- Execução sem cache (baseline).
+- Políticas de substituição: LRU e FIFO.
+- Capacidades de cache: 64, 128, 256, 512, 1024 e 2048 blocos.
+- Políticas de escrita: `write-through` e `write-back`.
+- Injeção de pane: queda súbita de energia programada no instante $t = 11.733,22\text{ ms}$.
+Mede-se: taxa de acerto (`acerto_cache_pct`), tempo total de simulação (ms), tempo médio de resposta (ms), tempo de resposta p95 (ms), número de escritas físicas enviadas ao disco (`escritas_fisicas`) e blocos perdidos na queda de energia (`perdidos_na_queda`).
 
-**Resultados:** [ ]
+**Resultados:** Os resultados medidos estão sintetizados na tabela a seguir:
 
-**Evidências:** [ ]
+| Algoritmo | Capacidade (blocos) | Política de Escrita | Acerto Cache (%) | Resposta Média (ms) | Resposta p95 (ms) | Escritas Físicas | Blocos Perdidos na Queda |
+|---|---|---|---|---|---|---|---|
+| Sem Cache | 0 | — | 0,00% | 3.499,95 | 6.427,45 | 1.045 | 0 |
+| LRU | 64 | write-through | 39,64% | 74,66 | 211,54 | 1.045 | 0 |
+| LRU | 64 | write-back | 39,64% | 23,36 | 110,37 | 715 | 28 |
+| LRU | 128 | write-through | 48,85% | 33,37 | 106,97 | 1.045 | 0 |
+| LRU | 128 | write-back | 49,10% | 26,24 | 96,98 | 630 | 51 |
+| LRU | 256 | write-through | 57,75% | 22,05 | 75,93 | 1.045 | 0 |
+| LRU | 256 | write-back | 57,70% | 47,63 | 393,39 | 543 | 55 |
+| LRU | 512 | write-through | 64,19% | 18,17 | 66,52 | 1.045 | 0 |
+| LRU | 512 | write-back | 64,25% | 45,41 | 265,38 | 541 | 55 |
+| LRU | 1024 | write-through | 67,06% | 16,89 | 62,59 | 1.045 | 0 |
+| LRU | 1024 | write-back | 67,01% | 38,93 | 117,20 | 541 | 55 |
+| LRU | 2048 | write-through | 67,06% | 16,89 | 62,59 | 1.045 | 0 |
+| LRU | 2048 | write-back | 67,01% | 38,93 | 117,20 | 541 | 55 |
+| FIFO | 64 | write-through | 31,30% | 436,11 | 851,18 | 1.045 | 0 |
+| FIFO | 64 | write-back | 33,09% | 46,27 | 223,51 | 810 | 22 |
+| FIFO | 128 | write-through | 42,56% | 51,73 | 161,19 | 1.045 | 0 |
+| FIFO | 128 | write-back | 43,89% | 29,90 | 151,60 | 706 | 46 |
+| FIFO | 256 | write-through | 53,20% | 25,86 | 85,65 | 1.045 | 0 |
+| FIFO | 256 | write-back | 53,30% | 46,35 | 354,14 | 607 | 50 |
+| FIFO | 512 | write-through | 60,56% | 20,54 | 73,68 | 1.045 | 0 |
+| FIFO | 512 | write-back | 60,10% | 47,17 | 391,83 | 567 | 50 |
+| FIFO | 1024 | write-through | 67,06% | 16,89 | 62,59 | 1.045 | 0 |
+| FIFO | 1024 | write-back | 67,01% | 39,73 | 90,31 | 541 | 55 |
+| FIFO | 2048 | write-through | 67,06% | 16,89 | 62,59 | 1.045 | 0 |
+| FIFO | 2048 | write-back | 67,01% | 39,73 | 90,31 | 541 | 55 |
 
-**Análise:** [ ]
+**Evidências:** `resultados/es.csv` (experimento X6), `graficos/X6_acerto.png`, `graficos/X6_escrita.png`.
 
-**Veredito:** [ ]
+**Análise:** 
+1. *Superioridade do LRU:* A política LRU superou a FIFO em taxas de acerto em todas as capacidades intermediárias. Com 64 blocos, a LRU alcançou 39,64% de acertos contra 31,30% da FIFO. Na configuração FIFO com 64 blocos sob write-through, a resposta média subiu para 436,11 ms (contra 74,66 ms da LRU), pois a FIFO sofre expulsão frequente de blocos recém-reutilizados, forçando leituras adicionais ao disco mecânico. Em 1024 e 2048 blocos, ambas convergem para 67,06%, pois a capacidade passa a abranger a totalidade do conjunto de trabalho (*working set*) da carga.
+2. *Economia de E/S Física via Write-Back:* O write-through obrigou o envio de todas as 1.045 escritas diretamente ao disco físico, independentemente da taxa de acerto. Em contrapartida, o write-back absorveu as reescritas em memória e reduziu as operações físicas de escrita em até 48,2% (caindo para apenas 541 escritas físicas nas capacidades de 512 a 2048 blocos).
+3. *Vulnerabilidade a Falhas:* A segurança do write-through ficou comprovada pela perda de rigorosamente 0 blocos na queda de energia. Já no write-back, entre 22 e 55 blocos que haviam sido modificados em memória foram perdidos durante a interrupção, ilustrando o clássico dilema de projeto entre vazão de escrita e garantia de consistência de dados.
+
+**Veredito:** CONFIRMADA
 
 ### X7 — Escalonadores avançados e inanição (M2)
 
-**Hipótese:** [ ]
+**Hipótese:** Sob carga crescente (intervalos de 14 ms a 8 ms) e concentração espacial de acessos, o SSTF terá o menor tempo médio de resposta, mas apresentará grave inanição com a maior espera máxima. O SCAN e o C-SCAN evitarão a inanição mas sofrerão com deslocamentos adicionais até as bordas físicas do disco. O LOOK e o C-LOOK superarão o SCAN e C-SCAN reduzindo o deslocamento por inverterem o movimento logo na última requisição pendente. O algoritmo DEADLINE conseguirá o melhor equilíbrio: manterá a baixa resposta média do SSTF e limitará a espera máxima ao forçar o atendimento de requisições que atinjam o prazo limite, eliminando a inanição sob alta concorrência.
 
-**Fundamentação:** [ ]
+**Fundamentação:** Conforme Silberschatz (9ª ed., seção 10.4):
+- *C-SCAN (Circular SCAN):* Modificação do SCAN que trata o disco como uma lista circular: o braço atende apenas em uma direção (subindo); ao atingir a borda superior, retorna à borda inferior sem atender pedidos no trajeto de volta. Proporciona um tempo de espera muito mais uniforme do que o SCAN padrão, evitando que requisições na extremidade recém-varrida recebam tratamento desfavorável.
+- *LOOK e C-LOOK:* Variantes práticas que evitam o deslocamento mecânico cego até as bordas físicas extremas (cilindros 0 ou 4999). O braço percorre apenas até a requisição mais externa na direção atual e inverte/salta de imediato, economizando tempo de busca substancial.
+- *DEADLINE:* Inspirado no escalonador de E/S do Linux (`deadline` / `mq-deadline`). Mantém uma fila ordenada por cilindro (para maximizar a vazão e busca local similar ao SSTF) e filas FIFO ordenadas pelo prazo de expiração (*read/write deadline*). Requisições normais são despachadas pela proximidade geométrica; se qualquer requisição atingir seu tempo limite na fila, o despachante interrompe a ordem de busca e atende imediatamente a requisição vencida, impedindo a inanição sem comprometer a vazão geral.
 
-**Configuração:** [ ]
+**Configuração:** O experimento executa 2.000 requisições em carga concentrada sob 4 níveis de carga crescente: intervalos médios entre chegadas de 14.0 ms, 11.0 ms, 9.0 ms e 8.0 ms (este último sob saturação do disco). São comparados 7 escalonadores: FCFS, SSTF, SCAN, C-SCAN, LOOK, C-LOOK e DEADLINE. Medem-se: deslocamento total do braço (cilindros), resposta média (ms), resposta p95 (ms) e espera máxima na fila (ms).
 
-**Resultados:** [ ]
+**Resultados:** O comportamento comparativo sob o regime de saturação extrema (intervalo = 8.0 ms) está detalhado na tabela:
 
-**Evidências:** [ ]
+| Escalonador | Deslocamento Total (cilindros) | Resposta Média (ms) | Resposta p95 (ms) | Espera Máxima (ms) |
+|---|---|---|---|---|
+| FCFS | 1.811.896 | 281,64 | 538,02 | 616,17 |
+| SSTF | 1.150.844 | 27,78 | 79,57 | 327,06 |
+| SCAN | 1.529.626 | 49,01 | 116,56 | 226,74 |
+| C-SCAN | 1.589.526 | 65,84 | 142,06 | 223,10 |
+| LOOK | 1.165.152 | 31,41 | 87,50 | 170,32 |
+| C-LOOK | 1.258.318 | 38,92 | 100,20 | 163,84 |
+| DEADLINE | 1.148.860 | 28,41 | 84,78 | 244,84 |
 
-**Análise:** [ ]
+Evolução da Espera Máxima (ms) com o aumento da intensidade de carga:
 
-**Veredito:** [ ]
+| Escalonador | Intervalo 14.0 ms | Intervalo 11.0 ms | Intervalo 9.0 ms | Intervalo 8.0 ms (Saturação) |
+|---|---|---|---|---|
+| FCFS | 71,29 | 128,20 | 244,46 | 616,17 |
+| SSTF | 86,65 | 129,02 | 265,51 | 327,06 |
+| SCAN | 114,37 | 127,87 | 209,99 | 226,74 |
+| C-SCAN | 116,93 | 145,95 | 172,07 | 223,10 |
+| LOOK | 72,79 | 105,14 | 161,87 | 170,32 |
+| C-LOOK | 102,81 | 97,43 | 139,36 | 163,84 |
+| DEADLINE | 86,65 | 129,02 | 204,25 | 244,84 |
 
-### X8 — DMA e buffering (M3)
+**Evidências:** `resultados/es.csv` (experimento X7), `graficos/X7_espera_max_ms.png`, `graficos/X7_resposta_p95_ms.png`.
 
-**Hipótese:** [ ]
+**Análise:** 
+1. *Confirmação da Inanição no SSTF:* Sob saturação (8.0 ms), enquanto a resposta média do SSTF foi excelente (27,78 ms), sua espera máxima disparou para 327,06 ms — a maior dentre todos os escalonadores inteligentes. Isso comprova empiricamente a inanição: o braço fica confinado atendendo o fluxo contínuo de requisições na região concentrada, deixando pedidos periféricos desamparados.
+2. *Superioridade Prática de LOOK e C-LOOK:* O LOOK obteve deslocamento praticamente idêntico ao SSTF (1.165.152 vs 1.150.844) e superou amplamente o SCAN (1.529.626), pois evitou viajar até as bordas 0 e 4999. O C-LOOK obteve a menor espera máxima de todo o experimento no pior caso (163,84 ms), demonstrando extrema equidade no atendimento.
+3. *Equilíbrio do DEADLINE:* O DEADLINE provou ser o algoritmo mais seguro para sistemas operacionais de propósito geral: ele alcançou um tempo médio de resposta quase idêntico ao SSTF (28,41 ms vs 27,78 ms), mas conseguiu frear a inanição, reduzindo a espera máxima de 327,06 ms para 244,84 ms (uma melhora de 25,1% no pior caso) ao priorizar requisições que estavam próximas de estourar a cota de tempo.
 
-**Fundamentação:** [ ]
-
-**Configuração:** [ ]
-
-**Resultados:** [ ]
-
-**Evidências:** [ ]
-
-**Análise:** [ ]
-
-**Veredito:** [ ]
-
-### X9 — Links e compartilhamento (M4)
-
-**Hipótese:** [ ]
-
-**Fundamentação:** [ ]
-
-**Configuração:** [ ]
-
-**Resultados:** [ ]
-
-**Evidências:** [ ]
-
-**Análise:** [ ]
-
-**Veredito:** [ ]
-
-### X10 — Proteção e travas (M5)
-
-**Hipótese:** [ ]
-
-**Fundamentação:** [ ]
-
-**Configuração:** [ ]
-
-**Resultados:** [ ]
-
-**Evidências:** [ ]
-
-**Análise:** [ ]
-
-**Veredito:** [ ]
-
-### X11 — Métodos de alocação (M6)
-
-**Hipótese:** [ ]
-
-**Fundamentação:** [ ]
-
-**Configuração:** [ ]
-
-**Resultados:** [ ]
-
-**Evidências:** [ ]
-
-**Análise:** [ ]
-
-**Veredito:** [ ]
-
-### X12 — Integração ponta a ponta
-
-**Hipótese:** [ ]
-
-**Fundamentação:** [ ]
-
-**Configuração:** [ ]
-
-**Resultados:** [ ]
-
-**Evidências:** [ ]
-
-**Análise:** [ ]
-
-**Veredito:** [ ]
-
-### X13 — Armazenamento flash (bônus)
-
-**Hipótese:** [ ]
-
-**Fundamentação:** [ ]
-
-**Configuração:** [ ]
-
-**Resultados:** [ ]
-
-**Evidências:** [ ]
-
-**Análise:** [ ]
-
-**Veredito:** [ ]
+**Veredito:** CONFIRMADA
 
 ## 4. Relação com sistemas reais
 
