@@ -33,10 +33,11 @@ INSTRUÇÕES DO MODELO (apaguem este bloco antes de entregar)
 | N4 · Experimentos X1–X5 e relatório | completo | Experimentos do núcleo executados, gráficos gerados e analisados |
 | M1 · Cache de blocos | completo | Cache LRU e FIFO, write-through e write-back, perda na queda de energia |
 | M2 · Escalonamento avançado | completo | C-SCAN, LOOK, C-LOOK e DEADLINE com controle de inanição |
+| M3 · DMA e buffering | completo | Custo de CPU com DMA e simulação de buffer simples, duplo e circular |
 | Integração (grupos de 4) | não se aplica | Grupo com 2 integrantes |
 | Bônus flash | não feito | — |
 
-Resultado dos testes automáticos (`python3 executar.py testes`): Ran 26 tests in 0.002s - OK (skipped=5)
+Resultado dos testes automáticos (`python3 executar.py testes`): Ran 26 tests in 0.003s - OK (skipped=4)
 
 ## 2. Implementação
 
@@ -84,6 +85,16 @@ No `CLOOK`, o atendimento é unidirecional subindo; ao esgotar requisições à 
 No `Deadline`, a cada escolha avalia-se se alguma requisição pendente atingiu seu tempo limite (`agora >= req.prazo`); se houver, atende-se imediatamente a de prazo mais urgente (empate desfeito por ordem de chegada na fila), sobrepondo-se à ordem geométrica. Caso não haja requisições expiradas, comporta-se como o SSTF buscando a menor distância de seek.
 
 **Dificuldades:** Sincronizar o parâmetro `agora` nas decisões de prazo do `Deadline` mantendo consistência com o escalonamento temporal do simulador por eventos.
+
+### M3 — DMA e buffering
+
+**Onde:** `simes/es/cpu.py` (`custo_cpu`) e `simes/es/buffering.py` (`simular_buffering`).
+
+**Decisões:** 
+No subsistema de CPU (`cpu.py`), tarifamos o DMA somando a sobrecarga única de programação dos registradores da controladora de DMA (`CUSTO_PROGRAMAR_DMA_MS`) à interrupção final de término (`CUSTO_INTERRUPCAO_MS`), independentemente do número de blocos transferidos.
+Na simulação de buffering (`simular_buffering`), modelamos a interação temporal entre o produtor de dados e o dispositivo consumidor através do rastreamento de instantes de conclusão por bloco $k$. Para $k \le n\_buffers$, o buffer é disponibilizado no instante zero; para $k > n\_buffers$, o buffer é liberado no instante em que o dispositivo conclui a gravação física do bloco $k - n\_buffers$. Se o buffer ainda estiver ocupado quando o produtor conclui o bloco anterior, o intervalo de espera é acumulado em `bloqueio_produtor_ms`. O dispositivo inicia a gravação do bloco assim que o bloco está concluído pelo produtor e o dispositivo terminou de gravar o bloco $k-1$. A utilização percentual calcula a proporção do tempo total em que o dispositivo esteve ativamente gravando dados.
+
+**Dificuldades:** Rastrear a dependência temporal exata de liberação circular de buffers entre blocos arbitrários garantindo o correto encadeamento de sobreposição de E/S.
 
 ## 3. Experimentos
 
@@ -376,6 +387,54 @@ Evolução da Espera Máxima (ms) com o aumento da intensidade de carga:
 1. *Confirmação da Inanição no SSTF:* Sob saturação (8.0 ms), enquanto a resposta média do SSTF foi excelente (27,78 ms), sua espera máxima disparou para 327,06 ms — a maior dentre todos os escalonadores inteligentes. Isso comprova empiricamente a inanição: o braço fica confinado atendendo o fluxo contínuo de requisições na região concentrada, deixando pedidos periféricos desamparados.
 2. *Superioridade Prática de LOOK e C-LOOK:* O LOOK obteve deslocamento praticamente idêntico ao SSTF (1.165.152 vs 1.150.844) e superou amplamente o SCAN (1.529.626), pois evitou viajar até as bordas 0 e 4999. O C-LOOK obteve a menor espera máxima de todo o experimento no pior caso (163,84 ms), demonstrando extrema equidade no atendimento.
 3. *Equilíbrio do DEADLINE:* O DEADLINE provou ser o algoritmo mais seguro para sistemas operacionais de propósito geral: ele alcançou um tempo médio de resposta quase idêntico ao SSTF (28,41 ms vs 27,78 ms), mas conseguiu frear a inanição, reduzindo a espera máxima de 327,06 ms para 244,84 ms (uma melhora de 25,1% no pior caso) ao priorizar requisições que estavam próximas de estourar a cota de tempo.
+
+**Veredito:** CONFIRMADA
+
+### X8 — DMA e buffering (M3)
+
+**Hipótese:** 
+1. *DMA vs Interrupção:* Para transferências pequenas (1 bloco), o custo de CPU do DMA será similar ao da interrupção tradicional. Para transferências volumosas (8, 64 e 256 blocos), o consumo de CPU da interrupção crescerá linearmente com a quantidade de blocos devido às interrupções e cópias repetidas por bloco, enquanto o custo do DMA permanecerá estritamente constante e diminuto.
+2. *Buffering:* O buffer duplo ($N=2$) e circular ($N=3$) reduzirão drasticamente o tempo total e eliminarão ou diminuirão o bloqueio do produtor em comparação ao buffer simples ($N=1$), permitindo a sobreposição plena (*overlap*) entre o processamento do produtor e a gravação física do dispositivo.
+
+**Fundamentação:** Conforme Silberschatz (9ª ed., seções 13.2.3 e 13.4.2):
+- *Direct Memory Access (DMA):* Em transferências volumosas, a E/S dirigida por interrupções gera sobrecarga inaceitável de CPU ao interromper o processador e exigir cópia via software a cada bloco transferido. Com o DMA, a CPU programa a controladora com o endereço de origem, destino e contagem de bytes; a controladora transfere todo o bloco de dados diretamente pela arquitetura de barramento para a memória principal (*cycle stealing*), disparando uma única interrupção de hardware ao concluir o lote completo.
+- *Buffering (Simples, Duplo e Circular):* O buffer desacopla a velocidade do produtor e do consumidor. No buffer simples ($N=1$), o produtor precisa travar e aguardar o término da transferência para a mídia antes de começar a produzir o próximo bloco. No buffer duplo (*double buffering*, $N=2$), o produtor preenche um buffer enquanto o dispositivo grava a partir do outro de forma paralela. O buffer circular ($N \ge 3$) acomoda surtos temporários (*bursts*) de produção ou latências esporádicas na mídia sem degradar a vazão contínua.
+
+**Configuração:** O experimento executa duas baterias:
+1. *CPU em E/S:* 1.000 requisições aleatórias avaliando `polling`, `interrupcao` e `dma` sob blocos por requisição de 1, 8, 64 e 256 blocos. Mede-se `% de CPU gasta com E/S`.
+2. *Buffering:* 500 blocos com tempo de produção de 2.0 ms/bloco sob três regimes de consumo pelo dispositivo: rápido (0.5 ms), equilibrado (2.0 ms) e lento (8.0 ms), variando buffers em 1 (simples), 2 (duplo) e 3 (circular). Medem-se: tempo total (ms), tempo de bloqueio do produtor (ms) e taxa de utilização do dispositivo (%).
+
+**Resultados:** Os resultados medidos estão expressos nas tabelas a seguir:
+
+Tabela 1: Impacto do Modo de CPU conforme o tamanho da requisição (`resultados/es.csv`):
+
+| Tamanho da Requisição | Polling (% CPU) | Interrupção (% CPU) | DMA (% CPU) | Redução DMA vs Interrupção |
+|---|---|---|---|---|
+| 1 bloco | 25,17% | 0,042% | 0,045% | Equivalente |
+| 8 blocos | 25,87% | 0,338% | 0,045% | 7,5× menos CPU |
+| 64 blocos | 31,44% | 2,706% | 0,045% | 60,4× menos CPU |
+| 256 blocos | 50,52% | 10,820% | 0,045% | 241,5× menos CPU |
+
+Tabela 2: Desempenho do Buffering (`resultados/buffering.csv`):
+
+| Consumo por Bloco | Buffers ($N$) | Tempo Total (ms) | Bloqueio do Produtor (ms) | Utilização do Dispositivo (%) |
+|---|---|---|---|---|
+| 0.5 ms (dispositivo rápido) | 1 (simples) | 1.250,0 | 249,5 | 20,0% |
+| 0.5 ms (dispositivo rápido) | 2 (duplo) | 1.000,5 | 0,0 | 25,0% |
+| 0.5 ms (dispositivo rápido) | 3 (circular) | 1.000,5 | 0,0 | 25,0% |
+| 2.0 ms (equilibrado) | 1 (simples) | 2.000,0 | 998,0 | 50,0% |
+| 2.0 ms (equilibrado) | 2 (duplo) | 1.002,0 | 0,0 | 99,8% |
+| 2.0 ms (equilibrado) | 3 (circular) | 1.002,0 | 0,0 | 99,8% |
+| 8.0 ms (dispositivo lento) | 1 (simples) | 5.000,0 | 3.992,0 | 80,0% |
+| 8.0 ms (dispositivo lento) | 2 (duplo) | 4.002,0 | 2.988,0 | 100,0% |
+| 8.0 ms (dispositivo lento) | 3 (circular) | 4.002,0 | 2.980,0 | 100,0% |
+
+**Evidências:** `resultados/es.csv`, `resultados/buffering.csv` (experimento X8), `graficos/X8_cpu.png`, `graficos/X8_buffering.png`.
+
+**Análise:** 
+1. *Escalabilidade Radical do DMA:* Enquanto o polling consome até metade de toda a CPU (50,52%) e a interrupção escala proporcionalmente com o tamanho dos blocos (saltando de 0,04% para 10,82%), o DMA permaneceu estritamente cravado em 0,0448% de uso de CPU tanto para 1 quanto para 256 blocos. Para requisições grandes (256 blocos), o DMA consumiu 241 vezes menos tempo de processamento do que a interrupção programada, liberando a CPU para trabalho computacional útil.
+2. *Gargalo do Buffer Simples:* No buffer simples ($N=1$), como o produtor não pode reutilizar o buffer enquanto o dispositivo grava, o tempo total é estritamente a soma sequencial dos tempos de produção e gravação ($N \times (T_{\text{prod}} + T_{\text{cons}})$). No cenário equilibrado (2 ms / 2 ms), o buffer simples demorou 2.000 ms e manteve o produtor bloqueado por quase 1 segundo (998 ms).
+3. *Ganhos com Buffer Duplo e Circular:* Ao passar para buffer duplo ($N=2$), o tempo total no cenário equilibrado despencou de 2.000 ms para 1.002 ms (uma aceleração de 50%, praticamente dobrando a vazão do sistema), o bloqueio do produtor foi zerado (0,0 ms) e a utilização do dispositivo atingiu 99,8%. No cenário com dispositivo lento (8 ms), o buffer duplo e circular maximizaram a utilização da mídia em 100%, garantindo que o dispositivo nunca fique ocioso à espera de dados.
 
 **Veredito:** CONFIRMADA
 
