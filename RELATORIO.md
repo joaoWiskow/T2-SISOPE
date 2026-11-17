@@ -34,10 +34,11 @@ INSTRUÇÕES DO MODELO (apaguem este bloco antes de entregar)
 | M1 · Cache de blocos | completo | Cache LRU e FIFO, write-through e write-back, perda na queda de energia |
 | M2 · Escalonamento avançado | completo | C-SCAN, LOOK, C-LOOK e DEADLINE com controle de inanição |
 | M3 · DMA e buffering | completo | Custo de CPU com DMA e simulação de buffer simples, duplo e circular |
+| M4 · Links e compartilhamento | completo | Hard links, links simbólicos, ponteiros pendentes e detecção de ciclos |
 | Integração (grupos de 4) | não se aplica | Grupo com 2 integrantes |
 | Bônus flash | não feito | — |
 
-Resultado dos testes automáticos (`python3 executar.py testes`): Ran 26 tests in 0.003s - OK (skipped=4)
+Resultado dos testes automáticos (`python3 executar.py testes`): Ran 26 tests in 0.002s - OK (skipped=3)
 
 ## 2. Implementação
 
@@ -95,6 +96,18 @@ No subsistema de CPU (`cpu.py`), tarifamos o DMA somando a sobrecarga única de 
 Na simulação de buffering (`simular_buffering`), modelamos a interação temporal entre o produtor de dados e o dispositivo consumidor através do rastreamento de instantes de conclusão por bloco $k$. Para $k \le n\_buffers$, o buffer é disponibilizado no instante zero; para $k > n\_buffers$, o buffer é liberado no instante em que o dispositivo conclui a gravação física do bloco $k - n\_buffers$. Se o buffer ainda estiver ocupado quando o produtor conclui o bloco anterior, o intervalo de espera é acumulado em `bloqueio_produtor_ms`. O dispositivo inicia a gravação do bloco assim que o bloco está concluído pelo produtor e o dispositivo terminou de gravar o bloco $k-1$. A utilização percentual calcula a proporção do tempo total em que o dispositivo esteve ativamente gravando dados.
 
 **Dificuldades:** Rastrear a dependência temporal exata de liberação circular de buffers entre blocos arbitrários garantindo o correto encadeamento de sobreposição de E/S.
+
+### M4 — Links e compartilhamento
+
+**Onde:** `simes/arquivos/sistema.py` (`link`, `symlink`, `percorrer`, `resolver`).
+
+**Decisões:** 
+No hard link (`link`), validamos que o alvo existente não seja um diretório (retornando `EPERM` caso seja), resolvemos o diretório pai do novo caminho e inserimos a entrada apontando para o mesmo `fcb.id`, incrementando o contador `fcb.links` em 1 e gravando o bloco do diretório pai.
+No link simbólico (`symlink`), criamos um novo FCB com tipo `"simbolico"`, armazenando o caminho de destino em `fcb.alvo` sem alocar blocos de dados, gravando o bloco do pai.
+Na resolução de caminhos (`resolver`), implementamos o parâmetro de controle `links_seguidos` para rastrear recursão de symlinks; se atingir `MAX_LINKS_SIMBOLICOS` (8), interrompe-se imediatamente com `ErroSA('ELOOP')`. Se o destino de um link simbólico não existir, contabilizamos `links_pendentes` e propagamos `ENOENT`.
+Na travessia recursiva (`percorrer`), mantemos um conjunto de diretórios visitados (`visitados`). Ao encontrar um diretório já registrado na travessia (seja por links diretos ou links simbólicos), detectamos o ciclo, incrementamos `ciclos_detectados` e podamos a descida para evitar laço infinito. Contabilizamos também `percorrer_diretorios` e `percorrer_arquivos`.
+
+**Dificuldades:** Prevenir recursão infinita e detectar laços entre links simbólicos mútuos (ex.: A aponta para B e B aponta para A) garantindo que a resolução lance `ELOOP` e que o `percorrer` identifique os ciclos sem travar a execução.
 
 ## 3. Experimentos
 
@@ -435,6 +448,63 @@ Tabela 2: Desempenho do Buffering (`resultados/buffering.csv`):
 1. *Escalabilidade Radical do DMA:* Enquanto o polling consome até metade de toda a CPU (50,52%) e a interrupção escala proporcionalmente com o tamanho dos blocos (saltando de 0,04% para 10,82%), o DMA permaneceu estritamente cravado em 0,0448% de uso de CPU tanto para 1 quanto para 256 blocos. Para requisições grandes (256 blocos), o DMA consumiu 241 vezes menos tempo de processamento do que a interrupção programada, liberando a CPU para trabalho computacional útil.
 2. *Gargalo do Buffer Simples:* No buffer simples ($N=1$), como o produtor não pode reutilizar o buffer enquanto o dispositivo grava, o tempo total é estritamente a soma sequencial dos tempos de produção e gravação ($N \times (T_{\text{prod}} + T_{\text{cons}})$). No cenário equilibrado (2 ms / 2 ms), o buffer simples demorou 2.000 ms e manteve o produtor bloqueado por quase 1 segundo (998 ms).
 3. *Ganhos com Buffer Duplo e Circular:* Ao passar para buffer duplo ($N=2$), o tempo total no cenário equilibrado despencou de 2.000 ms para 1.002 ms (uma aceleração de 50%, praticamente dobrando a vazão do sistema), o bloqueio do produtor foi zerado (0,0 ms) e a utilização do dispositivo atingiu 99,8%. No cenário com dispositivo lento (8 ms), o buffer duplo e circular maximizaram a utilização da mídia em 100%, garantindo que o dispositivo nunca fique ocioso à espera de dados.
+
+**Veredito:** CONFIRMADA
+
+### X9 — Links e compartilhamento (M4)
+
+**Hipótese:** 
+1. *Hard links vs Links Simbólicos:* O hard link compartilhará o mesmo FCB físico e preservará o acesso aos dados mesmo se o caminho original for removido via `unlink` (enquanto `links > 0`). Em contrapartida, a remoção do alvo original de um link simbólico transformará o atalho em um ponteiro pendente (*dangling link*), falhando com `ENOENT` em tentativas de abertura.
+2. *Detecção de Ciclos:* A criação de laços com links simbólicos (ex.: links mútuos ou atalhos para diretórios ancestrais) gerará erro `ELOOP` no `open` após 8 tentativas e será detectada e podada pelo `percorrer`, incrementando o contador de ciclos e evitando laços infinitos de travessia. Tentativas de criar hard links para diretórios serão bloqueadas com `EPERM`.
+
+**Fundamentação:** Conforme Silberschatz (9ª ed., capítulo 11 - Diretórios em Grafo Acíclico e Grafo Geral):
+- *Hard Links:* São múltiplas entradas de diretório que apontam para o mesmo inode/FCB. Não há distinção entre o arquivo original e o atalho; cada chamada a `unlink` apenas remove a entrada local e decrementa o contador de referências. O arquivo físico só é desalocado quando a contagem de links atinge zero e nenhum processo o mantém aberto. Sistemas Unix proíbem hard links para diretórios para evitar laços que corrompam a estrutura em árvore do sistema de arquivos.
+- *Soft/Symbolic Links:* São arquivos especiais que contêm como conteúdo o caminho textual de outro arquivo ou diretório. Se o arquivo alvo for excluído ou renomeado, o symlink permanece no disco, tornando-se um link quebrado/pendente (*dangling pointer*).
+- *Ciclos e Travessia de Grafos:* Quando links simbólicos para diretórios são introduzidos, a hierarquia deixa de ser uma árvore pura e torna-se um grafo direcionado geral. Ferramentas de busca (como o comando `find`) e algoritmos de travessia do kernel precisam manter estruturas de histórico (conjunto de nós visitados) e limites máximos de saltos de links para não entrarem em laço infinito.
+
+**Configuração:** O experimento executa a carga padronizada `links` (56 operações), criando árvores de diretórios, hard links (`/atalhos/a_rigido` -> `/dados/a.txt`), links simbólicos (`/atalhos/b_simbolico` -> `/dados/b.txt`), atalhos simbólicos para diretórios (`/atalhos/dados_simbolico` -> `/dados`), links recursivos circulares (`/atalhos/l1` <-> `/atalhos/l2`) e links para diretórios ancestrais criando ciclos (`/dados/sub/volta` -> `/atalhos`). A carga testa leituras normais, remoções de alvos (`unlink /dados/a.txt` e `/dados/b.txt`), tentativas de abertura de atalhos e travessias completas com `percorrer /`. Medem-se os acessos, tempos, erros emitidos e contadores de auditoria (`ciclos_detectados`, `links_pendentes`, `percorrer_diretorios`, `percorrer_arquivos`).
+
+**Resultados:** Os resultados medidos estão consolidados nas tabelas a seguir:
+
+Tabela 1: Resumo Global e Contadores do Experimento X9 (`resultados/arquivos.csv`):
+
+| Métrica | Valor Medido |
+|---|---|
+| Total de Operações Executadas | 56 |
+| Total de Erros Esperados | 3 |
+| Acessos Totais ao Disco | 258 |
+| Acessos Médios por Operação | 4,61 |
+| Tempo Total de Execução (ms) | 915,21 |
+| Tempo Médio por Operação (ms) | 16,34 |
+| Ciclos Detectados (`ciclos_detectados`) | 11 |
+| Links Pendentes Detectados (`links_pendentes`) | 1 |
+| Erros ELOOP (`erro_ELOOP`) | 1 |
+| Erros ENOENT (`erro_ENOENT`) | 1 |
+| Erros EPERM (`erro_EPERM`) | 1 |
+| Diretórios Percorridos (`percorrer_diretorios`) | 11 |
+| Arquivos Percorridos (`percorrer_arquivos`) | 9 |
+
+Tabela 2: Desempenho por Operação (`resultados/arquivos_por_operacao.csv`):
+
+| Operação | Quantidade ($n$) | Erros | Acessos Médios/Op | Tempo Médio/Op (ms) |
+|---|---|---|---|---|
+| `mkdir` | 3 | 0 | 3,33 | 9,86 |
+| `create` | 3 | 0 | 3,33 | 8,47 |
+| `link` | 2 | 1 | 3,00 | 10,55 |
+| `symlink` | 5 | 0 | 3,20 | 11,80 |
+| `open` | 13 | 2 | 4,92 | 16,88 |
+| `read` | 14 | 0 | 1,00 | 1,83 |
+| `close` | 11 | 0 | 0,00 | 0,00 |
+| `unlink` | 2 | 0 | 3,00 | 8,46 |
+| `percorrer` | 3 | 0 | 44,00 | 172,73 |
+
+**Evidências:** `resultados/arquivos.csv`, `resultados/arquivos_por_operacao.csv` (experimento X9).
+
+**Análise:** 
+1. *Preservação de Dados via Hard Link:* Quando `/dados/a.txt` sofreu `unlink`, a contagem de links do FCB decresceu de 2 para 1. O arquivo continuou existindo e operando normalmente através do atalho `/atalhos/a_rigido`, que foi reaberto e lido com sucesso pelo processo P2 sem falha alguma, confirmando a semântica clássica de inodes compartilhados.
+2. *Falha de Link Pendente:* Quando `/dados/b.txt` sofreu `unlink`, o link simbólico `/atalhos/b_simbolico` apontou para um caminho inexistente. A tentativa de abertura subsequente gerou o erro `ENOENT` e foi devidamente registrada pelo sistema como `links_pendentes = 1`.
+3. *Controle de Ciclos e ELOOP:* A tentativa de abrir `/atalhos/l1` (que apontava para `l2`, que apontava de volta para `l1`) atingiu o limite de saltos e gerou `ErroSA('ELOOP')` (`erro_ELOOP = 1`), impedindo o congelamento do sistema operacional. Nas três chamadas de `percorrer`, os atalhos simbólicos que apontavam para diretórios ancestrais geraram 11 detecções de ciclo (`ciclos_detectados = 11`), sendo podados com sucesso sem repetição infinita de subárvores.
+4. *Proteção contra Hard Links em Diretórios:* A operação de criar um hard link para `/dados` em `/atalhos/dir_rigido` foi prontamente rejeitada com `ErroSA('EPERM')` (`erro_EPERM = 1`), preservando a integridade hierárquica do sistema de arquivos.
 
 **Veredito:** CONFIRMADA
 

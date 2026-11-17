@@ -157,7 +157,7 @@ class SistemaArquivos:
         return None
 
     # ============================================================ TODO — núcleo (N3)
-    def resolver(self, caminho, seguir_simbolico=True):
+    def resolver(self, caminho, seguir_simbolico=True, links_seguidos=0):
         """Devolve o FCB do caminho absoluto, lendo os diretórios do caminho (ver regras).
         Erros: ENOENT, ENOTDIR. Com o M4: segue links simbólicos (inclusive no meio do
         caminho; o último componente só se seguir_simbolico=True); ELOOP depois de
@@ -169,7 +169,6 @@ class SistemaArquivos:
 
         partes = self._dividir(caminho)
         atual = self.raiz
-        profundidade = 0
 
         for i, nome in enumerate(partes):
             if atual.tipo != "diretorio":
@@ -181,19 +180,26 @@ class SistemaArquivos:
             fcb = self.fcbs[atual.entradas[nome]]
             if i == len(partes) - 1:
                 if fcb.tipo == "simbolico" and seguir_simbolico:
-                    if profundidade >= MAX_LINKS_SIMBOLICOS:
+                    if links_seguidos >= MAX_LINKS_SIMBOLICOS:
                         raise ErroSA("ELOOP", "muitos links simbólicos")
                     alvo = fcb.alvo or ""
                     if not alvo:
+                        self.contadores["links_pendentes"] += 1
                         raise ErroSA("ENOENT", "link simbólico sem alvo")
-                    return self.resolver(alvo, seguir_simbolico=True)
+                    try:
+                        return self.resolver(alvo, seguir_simbolico=True, links_seguidos=links_seguidos + 1)
+                    except ErroSA as err:
+                        if err.codigo == "ENOENT":
+                            self.contadores["links_pendentes"] += 1
+                        raise
                 return fcb
 
             if fcb.tipo == "simbolico":
-                if profundidade >= MAX_LINKS_SIMBOLICOS:
+                if links_seguidos >= MAX_LINKS_SIMBOLICOS:
                     raise ErroSA("ELOOP", "muitos links simbólicos")
                 alvo = fcb.alvo or ""
                 if not alvo:
+                    self.contadores["links_pendentes"] += 1
                     raise ErroSA("ENOENT", "link simbólico sem alvo")
                 restante = "/".join(partes[i + 1:])
                 caminho_alvo = alvo.rstrip("/")
@@ -201,8 +207,12 @@ class SistemaArquivos:
                     caminho_alvo = "%s/%s" % (caminho_alvo.rstrip("/"), restante)
                 if not caminho_alvo.startswith("/"):
                     caminho_alvo = "/%s" % caminho_alvo
-                profundidade += 1
-                return self.resolver(caminho_alvo, seguir_simbolico=True)
+                try:
+                    return self.resolver(caminho_alvo, seguir_simbolico=True, links_seguidos=links_seguidos + 1)
+                except ErroSA as err:
+                    if err.codigo == "ENOENT":
+                        self.contadores["links_pendentes"] += 1
+                    raise
 
             atual = fcb
 
@@ -394,13 +404,52 @@ class SistemaArquivos:
         """Hard link: lê os diretórios até `existente` (como resolver) e até o pai de `novo`;
         cria a entrada; links += 1; grava o bloco do pai de `novo` (1 escrita).
         Hard link para diretório: ErroSA('EPERM')."""
-        raise NotImplementedError("TODO (M4): link")
+        if novo == "/":
+            raise ErroSA("EEXIST", "não é possível criar a raiz")
+
+        alvo_fcb = self.resolver(existente, seguir_simbolico=False)
+        if alvo_fcb.tipo == "diretorio":
+            raise ErroSA("EPERM", "%s é diretório (hard link não permitido)" % existente)
+
+        partes = self._dividir(novo)
+        nome = partes[-1]
+        pai_caminho = "/%s" % "/".join(partes[:-1]) if len(partes) > 1 else "/"
+        pai = self.resolver(pai_caminho)
+        if pai.tipo != "diretorio":
+            raise ErroSA("ENOTDIR", "%s não é diretório" % pai_caminho)
+        self._ler_diretorio(pai)
+        if nome in pai.entradas:
+            raise ErroSA("EEXIST", "%s já existe" % novo)
+
+        pai.entradas[nome] = alvo_fcb.id
+        alvo_fcb.links += 1
+        pai.sujo = True
+        self._gravar_diretorio(pai)
+        return alvo_fcb
 
     def symlink(self, processo, alvo, caminho):
         """Link simbólico: lê os diretórios até o pai de `caminho`; cria um FCB do tipo
         'simbolico' com fcb.alvo = alvo (sem blocos de dados); grava o bloco do pai (1 escrita).
         O alvo não precisa existir."""
-        raise NotImplementedError("TODO (M4): symlink")
+        if caminho == "/":
+            raise ErroSA("EEXIST", "não é possível criar a raiz")
+
+        partes = self._dividir(caminho)
+        nome = partes[-1]
+        pai_caminho = "/%s" % "/".join(partes[:-1]) if len(partes) > 1 else "/"
+        pai = self.resolver(pai_caminho)
+        if pai.tipo != "diretorio":
+            raise ErroSA("ENOTDIR", "%s não é diretório" % pai_caminho)
+        self._ler_diretorio(pai)
+        if nome in pai.entradas:
+            raise ErroSA("EEXIST", "%s já existe" % caminho)
+
+        novo = self._novo_fcb(nome, "simbolico", pai.id, processo)
+        novo.alvo = alvo
+        pai.entradas[nome] = novo.id
+        pai.sujo = True
+        self._gravar_diretorio(pai)
+        return novo
 
     def percorrer(self, processo, caminho):
         """Percorre a árvore a partir de `caminho` (como um `find`), lendo cada diretório
@@ -409,7 +458,42 @@ class SistemaArquivos:
         self.contadores['ciclos_detectados'] e não desça. Contem também
         'percorrer_diretorios', 'percorrer_arquivos' e 'links_pendentes' (links simbólicos
         cujo alvo não existe; contem também os encontrados pelo open)."""
-        raise NotImplementedError("TODO (M4): percorrer")
+        raiz_fcb = self.resolver(caminho, seguir_simbolico=True)
+        if raiz_fcb.tipo != "diretorio":
+            return None
+
+        visitados = set()
+
+        def _visitar(dir_fcb):
+            if dir_fcb.id in visitados:
+                self.contadores["ciclos_detectados"] += 1
+                return
+            visitados.add(dir_fcb.id)
+            self.contadores["percorrer_diretorios"] += 1
+            self._ler_diretorio(dir_fcb)
+
+            for nome in sorted(dir_fcb.entradas.keys()):
+                fcb_id = dir_fcb.entradas[nome]
+                fcb = self.fcbs[fcb_id]
+                if fcb.tipo == "arquivo":
+                    self.contadores["percorrer_arquivos"] += 1
+                elif fcb.tipo == "diretorio":
+                    _visitar(fcb)
+                elif fcb.tipo == "simbolico":
+                    alvo = fcb.alvo or ""
+                    try:
+                        alvo_fcb = self.resolver(alvo, seguir_simbolico=True)
+                    except ErroSA as e:
+                        if e.codigo == "ELOOP":
+                            self.contadores["ciclos_detectados"] += 1
+                        continue
+                    if alvo_fcb.tipo == "diretorio":
+                        _visitar(alvo_fcb)
+                    elif alvo_fcb.tipo == "arquivo":
+                        self.contadores["percorrer_arquivos"] += 1
+
+        _visitar(raiz_fcb)
+        return None
 
     # ======================================================== TODO — módulo M5
     # Regras do M5 (implementem também os ganchos _verificar_permissao e _verificar_trava,

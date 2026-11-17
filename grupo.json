@@ -3,7 +3,7 @@
     {"nome": "Nome Completo do Integrante 1"}
   ],
   "repositorio": "https://github.com/usuario/nome-do-repositorio",
-  "modulos": ["M1", "M2", "M3"],
+  "modulos": ["M1", "M2", "M3", "M4"],
   "integracao": false,
   "bonus_flash": false,
   "observacoes": ""

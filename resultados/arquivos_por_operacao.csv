@@ -68,3 +68,12 @@ X5,servidor_web,contigua,consultivo,create,12,0,3.0000,8.4600
 X5,servidor_web,contigua,consultivo,mkdir,1,0,3.0000,8.4600
 X5,servidor_web,contigua,consultivo,open,960,0,2.0000,4.2730
 X5,servidor_web,contigua,consultivo,read,4346,0,3.6505,1.1832
+X9,links,contigua,consultivo,close,11,0,0.0000,0.0000
+X9,links,contigua,consultivo,create,3,0,3.3333,8.4733
+X9,links,contigua,consultivo,link,2,1,3.0000,10.5450
+X9,links,contigua,consultivo,mkdir,3,0,3.3333,9.8633
+X9,links,contigua,consultivo,open,13,2,4.9231,16.8769
+X9,links,contigua,consultivo,percorrer,3,0,44.0000,172.7300
+X9,links,contigua,consultivo,read,14,0,1.0000,1.8271
+X9,links,contigua,consultivo,symlink,5,0,3.2000,11.8040
+X9,links,contigua,consultivo,unlink,2,0,3.0000,8.4600
